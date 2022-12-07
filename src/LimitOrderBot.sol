@@ -15,6 +15,7 @@ import { MultiCall } from "@gearbox-protocol/core-v2/contracts/libraries/MultiCa
 import { ICreditManagerV2 } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditManagerV2.sol";
 import { ICreditFacade, ICreditFacadeExtended } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditFacade.sol";
 import { IPriceOracleV2 } from "@gearbox-protocol/core-v2/contracts/interfaces/IPriceOracle.sol";
+import { IUniversalAdapter } from "@gearbox-protocol/core-v2/contracts/interfaces/adapters/IUniversalAdapter.sol";
 
 import { IUniswapV2Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV2Adapter.sol";
 import { IUniswapV3Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV3Adapter.sol";
@@ -26,6 +27,9 @@ import { ISwapRouter } from "@gearbox-protocol/integrations-v2/contracts/integra
 /// @author Dmitry Lekhovitsky.
 /// @notice Allows third parties to execute signed orders to sell assets in users
 ///         redit accounts on their behalf if certain conditions are met.
+/// @notice Currently, the only supported operations are Uni/Sushi exact input swaps.
+/// @notice Caller can pay themselves a bounty via UniversalAdapter as long as minimum
+///         price is ensured.
 contract LimitOrderBot is ILimitOrderBot, EIP712 {
     using Counters for Counters.Counter;
 
@@ -188,7 +192,9 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         for (uint256 i = 0; i < numCalls; ) {
             MultiCall calldata mcall = calls[i];
             address tokenSpent;
-            if (mcall.target == uniV3Adapter) {
+            if (mcall.target == manager.universalAdapter()) {
+                tokenSpent = _validateUniversalAdapterCall(mcall.callData);
+            } else if (mcall.target == uniV3Adapter) {
                 tokenSpent = _validateUniV3AdapterCall(mcall.callData, creditAccount);
             } else if (mcall.target == uniV2Adapter || mcall.target == sushiAdapter) {
                 tokenSpent = _validateUniV2AdapterCall(mcall.callData, creditAccount);
@@ -196,9 +202,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 revert InvalidCallTarget();
             }
 
-            // TODO: might be cheaper not to find unique tokens, only filter tokenIn
-            // would still have to truncate tho
-            // or to return an array of balances without intermediate tokens array
+            // TODO: optimize
             if (tokenSpent != tokenIn) {
                 uint256 j;
                 for (j = 0; j < numUniqueTokensSpent; ) {
@@ -250,6 +254,18 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 balanceDeltas
             )
         });
+    }
+
+    /// @dev Validates that call is made to withdrawTo method, returns withdrawn token.
+    function _validateUniversalAdapterCall(bytes calldata callData)
+        internal
+        pure
+        returns (address tokenSpent)
+    {
+        bytes4 selector = bytes4(callData);
+        if (selector != IUniversalAdapter.withdrawTo.selector)
+            revert InvalidCallMethod();
+        (tokenSpent, , ) = abi.decode(callData[4:], (address,address,uint256));
     }
 
     /// @dev Validates that call is made to the supported Uni V3 method, checks
