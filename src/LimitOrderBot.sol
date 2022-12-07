@@ -4,7 +4,6 @@ pragma solidity ^0.8.10;
 import { ILimitOrderBot } from "./interfaces/ILimitOrderBot.sol";
 
 import { Counters } from "@openzeppelin/contracts/utils/Counters.sol";
-import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -14,7 +13,6 @@ import { Balance } from "@gearbox-protocol/core-v2/contracts/libraries/Balances.
 import { MultiCall } from "@gearbox-protocol/core-v2/contracts/libraries/MultiCall.sol";
 import { ICreditManagerV2 } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditManagerV2.sol";
 import { ICreditFacade, ICreditFacadeExtended } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditFacade.sol";
-import { IPriceOracleV2 } from "@gearbox-protocol/core-v2/contracts/interfaces/IPriceOracle.sol";
 import { IUniversalAdapter } from "@gearbox-protocol/core-v2/contracts/interfaces/adapters/IUniversalAdapter.sol";
 
 import { IUniswapV2Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV2Adapter.sol";
@@ -26,10 +24,10 @@ import { ISwapRouter } from "@gearbox-protocol/integrations-v2/contracts/integra
 /// @title Gearbox Limit Order Bot.
 /// @author Dmitry Lekhovitsky.
 /// @notice Allows third parties to execute signed orders to sell assets in users
-///         redit accounts on their behalf if certain conditions are met.
+///         credit accounts on their behalf if certain conditions are met.
 /// @notice Currently, the only supported operations are Uni/Sushi exact input swaps.
-/// @notice Caller can pay themselves a bounty via UniversalAdapter as long as minimum
-///         price is ensured.
+/// @notice Caller can pay themself a bounty via UniversalAdapter as long as minimum
+///         required price for user is ensured.
 contract LimitOrderBot is ILimitOrderBot, EIP712 {
     using Counters for Counters.Counter;
 
@@ -92,7 +90,13 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         _useNonce(msg.sender);
     }
 
-    function _validateSignature(Order calldata order, uint8 v, bytes32 r, bytes32 s) internal {
+    /// @dev Validate that signature is valid for a given order.
+    function _validateSignature(
+        Order calldata order,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal {
         bytes32 structHash = keccak256(
             abi.encode(
                 _ORDER_TYPEHASH,
@@ -111,10 +115,9 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             revert InvalidSignature();
     }
 
-    function _executeOrder(
-        MultiCall[] calldata calls,
-        Order calldata order
-    ) internal {
+    /// @dev Validates an order and executes multicall with some checks that it
+    ///      indeed performs the correct action and doesn't steal user's funds.
+    function _executeOrder(MultiCall[] calldata calls, Order calldata order) internal {
         (
             address creditAccount,
             uint256 balanceBefore,
@@ -122,14 +125,23 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             uint256 minAmountOut
         ) = _validateOrder(order);
 
-        address[] memory tokensSpent = _validateCalls(calls, creditAccount, order.tokenIn);
+        (
+            address[] memory tokensSpent,
+            uint256 numTokens
+        ) = _validateCalls(calls, creditAccount, order.tokenIn);
 
         address facade = manager.creditFacade();
         ICreditFacade(facade).botMulticall(
             order.borrower,
             _appendCall(
                 calls,
-                _makeBalanceCheckCall(facade, tokensSpent, order.tokenOut, minAmountOut)
+                _makeBalanceCheckCall(
+                    facade,
+                    tokensSpent,
+                    numTokens,
+                    order.tokenOut,
+                    minAmountOut
+                )
             )
         );
 
@@ -143,9 +155,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
     /// @dev Checks if order is correctly constructed and can be executed.
     ///      Returns borrower's credit account, its balance of tokenIn, actual
     ///      amount of tokenIn to sell and minimum amount of tokenOut to receive.
-    function _validateOrder(
-        Order calldata order
-    )
+    function _validateOrder(Order calldata order)
         internal
         view
         returns (
@@ -184,13 +194,20 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
     )
         internal
         view
-        returns (address[] memory)
+        returns (
+            address[] memory tokensSpent,
+            uint256 numTokens
+        )
     {
         uint256 numCalls = calls.length;
-        address[] memory tokensSpent = new address[](numCalls);
-        uint256 numUniqueTokensSpent = 0;
+        tokensSpent = new address[](numCalls);
+        numTokens = 0;
         for (uint256 i = 0; i < numCalls; ) {
             MultiCall calldata mcall = calls[i];
+            unchecked {
+                ++i;
+            }
+
             address tokenSpent;
             if (mcall.target == manager.universalAdapter()) {
                 tokenSpent = _validateUniversalAdapterCall(mcall.callData);
@@ -201,28 +218,22 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             } else {
                 revert InvalidCallTarget();
             }
+            if (tokenSpent == tokenIn) continue;
 
-            // TODO: optimize
-            if (tokenSpent != tokenIn) {
-                uint256 j;
-                for (j = 0; j < numUniqueTokensSpent; ) {
-                    if (tokensSpent[j] == tokenSpent) break;
-                    unchecked {
-                        ++j;
-                    }
-                }
-                if (j == numUniqueTokensSpent) {
-                    tokensSpent[numUniqueTokensSpent] = tokenSpent;
-                    unchecked {
-                        ++numUniqueTokensSpent;
-                    }
+            uint256 j;
+            for (j = 0; j < numTokens; ) {
+                if (tokensSpent[j] == tokenSpent) break;
+                unchecked {
+                    ++j;
                 }
             }
-            unchecked {
-                ++i;
+            if (j == numTokens) {
+                tokensSpent[numTokens] = tokenSpent;
+                unchecked {
+                    ++numTokens;
+                }
             }
         }
-        return _truncate(tokensSpent, numUniqueTokensSpent);
     }
 
     /// @dev Returns a balance check call that makes sure that account receives
@@ -231,6 +242,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
     function _makeBalanceCheckCall(
         address facade,
         address[] memory tokensSpent,
+        uint256 numTokens,
         address tokenOut,
         uint256 minAmountOut
     )
@@ -238,7 +250,6 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         pure
         returns (MultiCall memory checkCall)
     {
-        uint256 numTokens = tokensSpent.length;
         Balance[] memory balanceDeltas = new Balance[](numTokens + 1);
         for (uint256 i = 0; i < numTokens; ) {
             balanceDeltas[i] = Balance({token: tokensSpent[i], balance: 0});
@@ -364,22 +375,6 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             }
         }
         newCalls[numCalls] = call;
-    }
-
-    /// @dev Truncates address array to a given length.
-    function _truncate(address[] memory array, uint256 length)
-        internal
-        pure
-        returns (address[] memory truncated)
-    {
-        assert(array.length >= length);
-        truncated = new address[](length);
-        for (uint256 i = 0; i < length; ) {
-            truncated[i] = array[i];
-            unchecked {
-                ++i;
-            }
-        }
     }
 
     /// @dev Returns true if |a - b| <= delta and false otherwise.
