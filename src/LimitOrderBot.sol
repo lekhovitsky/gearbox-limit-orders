@@ -6,9 +6,9 @@ import { ILimitOrderBot } from "./interfaces/ILimitOrderBot.sol";
 import { Counters } from "@openzeppelin/contracts/utils/Counters.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { IERC20 } from "@openzeppelin/contracts/interfaces/IERC20.sol";
+import { IERC20Metadata } from "@openzeppelin/contracts/interfaces/IERC20Metadata.sol";
 
-import { WAD } from "@gearbox-protocol/core-v2/contracts/libraries/Constants.sol";
 import { Balance } from "@gearbox-protocol/core-v2/contracts/libraries/Balances.sol";
 import { MultiCall } from "@gearbox-protocol/core-v2/contracts/libraries/MultiCall.sol";
 import { ICreditManagerV2 } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditManagerV2.sol";
@@ -34,7 +34,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
     mapping(address => Counters.Counter) private _nonces;
     bytes32 private constant _ORDER_TYPEHASH = keccak256(
         "Order(address borrower,address tokenIn,address tokenOut,uint256 amountIn,"
-        "uin256 minPriceWAD,uint256 triggerPriceWAD,uint256 nonce)"
+        "uin256 minPrice,uint256 triggerPrice,uint256 nonce)"
     );
 
     /// @dev Credit Manager this bot is connected to.
@@ -104,8 +104,8 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 order.tokenIn,
                 order.tokenOut,
                 order.amountIn,
-                order.minPriceWAD,
-                order.triggerPriceWAD,
+                order.minPrice,
+                order.triggerPrice,
                 _useNonce(order.borrower)
             )
         );
@@ -169,10 +169,13 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         if (order.tokenIn == order.tokenOut)
             revert InvalidOrder();
 
-        if (order.triggerPriceWAD > 0) {
-            uint256 price = manager.priceOracle().convert(WAD, order.tokenIn, order.tokenOut);
-            if (price >= order.triggerPriceWAD)
-                revert InvalidOrder();
+        uint256 ONE = 10**(IERC20Metadata(order.tokenIn).decimals());
+        if (order.triggerPrice > 0) {
+            uint256 price = manager.priceOracle().convert(
+                ONE, order.tokenIn, order.tokenOut
+            );
+            if (price >= order.triggerPrice)
+                revert NotTriggered();
         }
 
         balance = IERC20(order.tokenIn).balanceOf(creditAccount);
@@ -180,7 +183,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             revert InvalidOrder();
 
         amountIn = balance > order.amountIn ? order.amountIn : balance;
-        minAmountOut = amountIn * order.minPriceWAD / WAD;
+        minAmountOut = amountIn * order.minPrice / ONE;
     }
 
     /// @dev Validates that multicall is correct, i.e. each call is to the

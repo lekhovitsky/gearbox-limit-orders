@@ -15,9 +15,9 @@ interface ILimitOrderBot {
         // amount of tokenIn to sell
         uint256 amountIn;
         // min effective price at which tokenIn is sold for tokenOut
-        uint256 minPriceWAD;
+        uint256 minPrice;
         // if non-zero, maximum oracle price at which order can be executed
-        uint256 triggerPriceWAD;
+        uint256 triggerPrice;
     }
 
     /// @notice Emitted when limit order is successfully executed.
@@ -39,6 +39,9 @@ interface ILimitOrderBot {
     ///      (tokenIn and tokenOut are the same, or account doesn't have tokenIn)
     ///      or the trigger condition isn't satisfied.
     error InvalidOrder();
+
+    /// @dev When trying to execute an order when trigger condition is not met.
+    error NotTriggered();
 
     /// @dev When calling unsupported adapter in a multicall.
     error InvalidCallTarget();
