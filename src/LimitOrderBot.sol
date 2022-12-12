@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.10;
 
-import { ILimitOrderBot } from "./interfaces/ILimitOrderBot.sol";
+import { ILimitOrderBot, Order } from "./interfaces/ILimitOrderBot.sol";
 
 import { Counters } from "@openzeppelin/contracts/utils/Counters.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
@@ -21,7 +21,7 @@ import { IUniswapV2Router01 } from "@gearbox-protocol/integrations-v2/contracts/
 import { ISwapRouter } from "@gearbox-protocol/integrations-v2/contracts/integrations/uniswap/IUniswapV3.sol";
 
 
-/// @title Gearbox Limit Order Bot.
+/// @title Gearbox limit order bot.
 /// @author Dmitry Lekhovitsky.
 /// @notice Allows third parties to execute signed orders to sell assets in users
 ///         credit accounts on their behalf if certain conditions are met.
@@ -90,7 +90,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         _useNonce(msg.sender);
     }
 
-    /// @dev Validate that signature is valid for a given order.
+    /// @dev Checks if signature is valid for a given order.
     function _validateSignature(
         Order calldata order,
         uint8 v,
@@ -128,12 +128,12 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         (
             address[] memory tokensSpent,
             uint256 numTokens
-        ) = _validateCalls(calls, creditAccount, order.tokenIn);
+        ) = _validateCalls(calls, order.tokenIn);
 
         address facade = manager.creditFacade();
         ICreditFacade(facade).botMulticall(
             order.borrower,
-            _appendCall(
+            _prependCall(
                 calls,
                 _makeBalanceCheckCall(
                     facade,
@@ -146,7 +146,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         );
 
         uint256 balanceAfter = IERC20(order.tokenIn).balanceOf(creditAccount);
-        if (!_approxEqual(balanceAfter + amountIn, balanceBefore, 1))
+        if (balanceAfter + amountIn != balanceBefore)
             revert InvalidAmountSold();
 
         emit OrderExecuted(order.borrower, order.tokenIn, order.tokenOut, amountIn);
@@ -165,11 +165,10 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             uint256 minAmountOut
         )
     {
-        creditAccount = manager.getCreditAccountOrRevert(order.borrower);
-        if (order.tokenIn == order.tokenOut)
+        if (order.tokenIn == order.tokenOut || order.amountIn == 0)
             revert InvalidOrder();
 
-        uint256 ONE = 10**(IERC20Metadata(order.tokenIn).decimals());
+        uint256 ONE = 10 ** IERC20Metadata(order.tokenIn).decimals();
         if (order.triggerPrice > 0) {
             uint256 price = manager.priceOracle().convert(
                 ONE, order.tokenIn, order.tokenOut
@@ -178,11 +177,12 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 revert NotTriggered();
         }
 
+        creditAccount = manager.getCreditAccountOrRevert(order.borrower);
         balance = IERC20(order.tokenIn).balanceOf(creditAccount);
         if (balance <= 1)
-            revert InvalidOrder();
+            revert NothingToSell();
 
-        amountIn = balance > order.amountIn ? order.amountIn : balance;
+        amountIn = balance > order.amountIn ? order.amountIn : balance - 1;
         minAmountOut = amountIn * order.minPrice / ONE;
     }
 
@@ -192,7 +192,6 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
     ///      besides the one that should be sold.
     function _validateCalls(
         MultiCall[] calldata calls,
-        address creditAccount,
         address tokenIn
     )
         internal
@@ -215,9 +214,9 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             if (mcall.target == manager.universalAdapter()) {
                 tokenSpent = _validateUniversalAdapterCall(mcall.callData);
             } else if (mcall.target == uniV3Adapter) {
-                tokenSpent = _validateUniV3AdapterCall(mcall.callData, creditAccount);
+                tokenSpent = _validateUniV3AdapterCall(mcall.callData);
             } else if (mcall.target == uniV2Adapter || mcall.target == sushiAdapter) {
-                tokenSpent = _validateUniV2AdapterCall(mcall.callData, creditAccount);
+                tokenSpent = _validateUniV2AdapterCall(mcall.callData);
             } else {
                 revert InvalidCallTarget();
             }
@@ -282,9 +281,9 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         (tokenSpent, , ) = abi.decode(callData[4:], (address,address,uint256));
     }
 
-    /// @dev Validates that call is made to the supported Uni V3 method, checks
-    ///      swap recipient if specified, returns the token spent in the call.
-    function _validateUniV3AdapterCall(bytes calldata callData, address creditAccount)
+    /// @dev Validates that call is made to the supported Uni V3 method,
+    ///      returns the token spent in the call.
+    function _validateUniV3AdapterCall(bytes calldata callData)
         internal
         pure
         returns (address tokenSpent)
@@ -307,25 +306,21 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 callData[4:],
                 (ISwapRouter.ExactInputSingleParams)
             );
-            if (params.recipient != creditAccount)
-                revert InvalidCallParams();
             tokenSpent = params.tokenIn;
         } else if (selector == ISwapRouter.exactInput.selector) {
             ISwapRouter.ExactInputParams memory params = abi.decode(
                 callData[4:],
                 (ISwapRouter.ExactInputParams)
             );
-            if (params.recipient != creditAccount)
-                revert InvalidCallParams();
             tokenSpent = _parseTokenIn(params.path);
         } else {
             revert InvalidCallMethod();
         }
     }
 
-    /// @dev Validates that call is made to the supported Uni V2 method, checks
-    ///      swap recipient if specified, returns the token spent in the call.
-    function _validateUniV2AdapterCall(bytes calldata callData, address creditAccount)
+    /// @dev Validates that call is made to the supported Uni V2 method,
+    ///      returns the token spent in the call.
+    function _validateUniV2AdapterCall(bytes calldata callData)
         internal
         pure
         returns (address tokenSpent)
@@ -338,13 +333,10 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 (uint256, address[], uint256)
             );
         } else if (selector == IUniswapV2Router01.swapExactTokensForTokens.selector) {
-            address recipient;
-            (, , path, recipient, ) = abi.decode(
+            (, , path, , ) = abi.decode(
                 callData[4:],
                 (uint256, uint256, address[], address, uint256)
             );
-            if (recipient != creditAccount)
-                revert InvalidCallParams();
         } else {
             revert InvalidCallMethod();
         }
@@ -363,21 +355,21 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         return address(uint160(bytes20(path)));
     }
 
-    /// @dev Appends given call to the multicall.
-    function _appendCall(MultiCall[] calldata calls, MultiCall memory call)
+    /// @dev Prepends given call to the multicall.
+    function _prependCall(MultiCall[] calldata calls, MultiCall memory call)
         internal
         pure
         returns (MultiCall[] memory newCalls)
     {
         uint256 numCalls = calls.length;
         newCalls = new MultiCall[](numCalls + 1);
+        newCalls[0] = call;
         for (uint256 i = 0; i < numCalls; ) {
-            newCalls[i] = calls[i];
+            newCalls[i + 1] = calls[i];
             unchecked {
                 ++i;
             }
         }
-        newCalls[numCalls] = call;
     }
 
     /// @dev Returns true if |a - b| <= delta and false otherwise.

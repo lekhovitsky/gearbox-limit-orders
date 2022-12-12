@@ -4,21 +4,25 @@ pragma solidity ^0.8.10;
 import { MultiCall } from "@gearbox-protocol/core-v2/contracts/libraries/MultiCall.sol";
 
 
+/// @notice Limit order data.
+struct Order {
+    // address of the borrower who signed the order
+    address borrower;
+    // address of the token to sell
+    address tokenIn;
+    // address of the token to receive
+    address tokenOut;
+    // amount of tokenIn to sell
+    uint256 amountIn;
+    // min effective price at which tokenIn is sold for tokenOut
+    uint256 minPrice;
+    // if non-zero, maximum oracle price at which order can be executed
+    uint256 triggerPrice;
+}
+
+
+/// @title Gearbox limit order bot interface.
 interface ILimitOrderBot {
-    /// @notice Limit order data.
-    struct Order {
-        address borrower;
-        // address of the token to sell
-        address tokenIn;
-        // address of the token to receive
-        address tokenOut;
-        // amount of tokenIn to sell
-        uint256 amountIn;
-        // min effective price at which tokenIn is sold for tokenOut
-        uint256 minPrice;
-        // if non-zero, maximum oracle price at which order can be executed
-        uint256 triggerPrice;
-    }
 
     /// @notice Emitted when limit order is successfully executed.
     /// @param borrower Borrower address.
@@ -35,22 +39,20 @@ interface ILimitOrderBot {
     /// @dev When provided signature is invalid for a given order.
     error InvalidSignature();
 
-    /// @dev When order can't be executed because it's incorrectly constructed
-    ///      (tokenIn and tokenOut are the same, or account doesn't have tokenIn)
-    ///      or the trigger condition isn't satisfied.
+    /// @dev When order can't be executed because it's incorrectly constructed.
     error InvalidOrder();
 
     /// @dev When trying to execute an order when trigger condition is not met.
     error NotTriggered();
+
+    /// @dev When account doesn't have input token to sell.
+    error NothingToSell();
 
     /// @dev When calling unsupported adapter in a multicall.
     error InvalidCallTarget();
 
     /// @dev When calling unsupported method of supported adapter in a multicall.
     error InvalidCallMethod();
-
-    /// @dev When calling supported method with wrong params in a multicall.
-    error InvalidCallParams();
 
     /// @dev When multicall doesn't sell the required amount of order's input token.
     error InvalidAmountSold();
