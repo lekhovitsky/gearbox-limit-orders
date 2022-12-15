@@ -4,5 +4,6 @@ forge test \
     --fork-url $RPC_URL \
     --fork-block-number 16000000 \
     --etherscan-api-key $ETHERSCAN_API_KEY \
+    --gas-report \
     --via-ir \
     -vvv

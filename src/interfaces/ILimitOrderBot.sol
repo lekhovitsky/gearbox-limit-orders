@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.10;
+pragma solidity ^0.8.17;
 
 import { MultiCall } from "@gearbox-protocol/core-v2/contracts/libraries/MultiCall.sol";
 
@@ -66,7 +66,17 @@ interface ILimitOrderBot {
     /// @notice Borrower's current nonce for EIP-712 signature.
     function nonces(address borrower) external view returns (uint256);
 
-    /// @notice Executes a signed limit order with given multicall.
+    /// @notice Executes a signed limit order via provided multicall.
+    /// @dev In order for multicall to be valid, the following must hold:
+    /// * Each subcall executes one of supported methods, which are all exact input
+    ///   swaps of Uniswap V2, Uniswap V3 and Sushiswap.
+    /// * Multicall sells precisely the specified amount of the input token.
+    ///   If account's balance is smaller than order size, all balance must be sold.
+    /// * For any token spent during the multicall except for the order input token,
+    ///   its balance after the multicall must be at least that before.
+    /// * Effective price for the user must be at least that specified in the order.
+    /// @dev Caller can pay themself a bounty via `UniversalAdapter.withdrawTo` call
+    ///   as long as all balance conditions above hold.
     /// @param calls Operations needed to execute the order.
     /// @param order Limit order data.
     /// @param v Signature component.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.10;
+pragma solidity ^0.8.17;
 
 import { ILimitOrderBot, Order } from "./interfaces/ILimitOrderBot.sol";
 
@@ -12,22 +12,19 @@ import { IERC20Metadata } from "@openzeppelin/contracts/interfaces/IERC20Metadat
 import { Balance } from "@gearbox-protocol/core-v2/contracts/libraries/Balances.sol";
 import { MultiCall } from "@gearbox-protocol/core-v2/contracts/libraries/MultiCall.sol";
 import { ICreditManagerV2 } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditManagerV2.sol";
-import { ICreditFacade, ICreditFacadeExtended } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditFacade.sol";
 import { IUniversalAdapter } from "@gearbox-protocol/core-v2/contracts/interfaces/adapters/IUniversalAdapter.sol";
+import { ICreditFacade, ICreditFacadeExtended } from "@gearbox-protocol/core-v2/contracts/interfaces/ICreditFacade.sol";
 
-import { IUniswapV2Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV2Adapter.sol";
-import { IUniswapV3Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV3Adapter.sol";
-import { IUniswapV2Router01 } from "@gearbox-protocol/integrations-v2/contracts/integrations/uniswap/IUniswapV2Router01.sol";
 import { ISwapRouter } from "@gearbox-protocol/integrations-v2/contracts/integrations/uniswap/IUniswapV3.sol";
+import { IUniswapV3Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV3Adapter.sol";
+import { IUniswapV2Adapter } from "@gearbox-protocol/integrations-v2/contracts/interfaces/uniswap/IUniswapV2Adapter.sol";
+import { IUniswapV2Router01 } from "@gearbox-protocol/integrations-v2/contracts/integrations/uniswap/IUniswapV2Router01.sol";
 
 
 /// @title Gearbox limit order bot.
 /// @author Dmitry Lekhovitsky.
 /// @notice Allows third parties to execute signed orders to sell assets in users
 ///         credit accounts on their behalf if certain conditions are met.
-/// @notice Currently, the only supported operations are Uni/Sushi exact input swaps.
-/// @notice Caller can pay themself a bounty via UniversalAdapter as long as minimum
-///         required price for user is ensured.
 contract LimitOrderBot is ILimitOrderBot, EIP712 {
     using Counters for Counters.Counter;
 
@@ -173,7 +170,7 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
             uint256 price = manager.priceOracle().convert(
                 ONE, order.tokenIn, order.tokenOut
             );
-            if (price >= order.triggerPrice)
+            if (price > order.triggerPrice)
                 revert NotTriggered();
         }
 
@@ -350,9 +347,15 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
         nonce.increment();
     }
 
-    /// @dev Parses first token address from encoded Uniswap V3 swap path.
-    function _parseTokenIn(bytes memory path) internal pure returns (address) {
-        return address(uint160(bytes20(path)));
+    /// @dev Parses input token address from bytes-encoded Uniswap V3 swap path.
+    function _parseTokenIn(bytes memory path) internal pure returns (address tokenIn) {
+        assembly {
+            tokenIn := div(
+                mload(add(path, 0x20)),
+                0x1000000000000000000000000
+            )
+        }
+        return tokenIn;
     }
 
     /// @dev Prepends given call to the multicall.
@@ -370,12 +373,5 @@ contract LimitOrderBot is ILimitOrderBot, EIP712 {
                 ++i;
             }
         }
-    }
-
-    /// @dev Returns true if |a - b| <= delta and false otherwise.
-    function _approxEqual(
-        uint256 a, uint256 b, uint256 delta
-    ) internal pure returns (bool) {
-        return (a <= b + delta) && (b <= a + delta);
     }
 }
