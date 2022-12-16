@@ -408,6 +408,50 @@ contract LimitOrderBotTest is Test {
     /// SUCCESSFUL EXECUTION TESTS
     ///
 
+    function test_executeOrder_works_currectly() public {
+        (
+            address account,
+            uint256 usdcBefore,
+            uint256 daiBefore
+        ) = _createTestAccount(USER);
+
+        Order memory order = _createTestOrder();
+
+        uint256 nonce = bot.nonces(USER);
+        (uint8 v, bytes32 r, bytes32 s) = _signOrder(
+            USER_PRIVATE_KEY, order, nonce
+        );
+
+        uint256 minWethAmountOut = order.amountIn * order.minPrice / 1 ether;
+
+        MultiCall[] memory calls = new MultiCall[](1);
+        calls[0] = MultiCall({
+            target: UNISWAP_V3_ADAPTER,
+            callData: abi.encodeWithSelector(
+                ISwapRouter.exactInput.selector,
+                ISwapRouter.ExactInputParams({
+                    path: abi.encodePacked(
+                        DAI, uint24(100), USDC, uint24(500), WETH
+                    ),
+                    recipient: address(0),
+                    deadline: block.timestamp,
+                    amountIn: order.amountIn,
+                    amountOutMinimum: 0
+                })
+            )
+        });
+
+        vm.expectEmit(true, true, true, true);
+        emit OrderExecuted(USER, DAI, WETH, order.amountIn);
+
+        bot.executeOrder(calls, order, v, r, s);
+
+        assertEq(bot.nonces(USER), nonce + 1);
+        assertGe(IERC20(WETH).balanceOf(account), minWethAmountOut);
+        assertGe(IERC20(USDC).balanceOf(account), usdcBefore);
+        assertEq(IERC20(DAI).balanceOf(account) + order.amountIn, daiBefore);
+    }
+
     function test_executeOrder_works_correctly_with_trigger_price_set() public {
         (
             address account,
